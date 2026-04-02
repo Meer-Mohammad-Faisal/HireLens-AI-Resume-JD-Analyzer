@@ -85,24 +85,39 @@ const interviewReportSchema = new mongoose.Schema({
 
     resume: {
         type: String,
-        required: [true, "Resume is required"]
+        default: ""
     },
 
     selfDescription: {
         type: String,
-
+        default: ""
     },
 
     matchScore: {
         type: Number,
         min: 0,
-        max: 100
+        max: 100,
+        default: 0
     },
 
     technicalQuestions: [ technicalQuestionSchema ],
     behavioralQuestions: [ behavioralQuestionSchema ],
     skillGaps: [ skillGapSchema ],
-    preparationPlan: [ preprationPlanSchema ]
+    preparationPlan: [ preprationPlanSchema ],
+    user: {
+        type: String,
+        default: "guest_user"
+    },
+    title: {
+        type: String,
+        default: "Interview Preparation Plan"
+    }
+    ,
+    source: {
+        type: String,
+        enum: ["ai", "fallback", "unknown"],
+        default: "unknown"
+    }
 }, {
     timestamps: true
 })
