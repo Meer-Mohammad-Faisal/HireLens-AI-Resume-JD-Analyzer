@@ -178,10 +178,19 @@ export const useInterview = () => {
             document.body.removeChild(link)
             window.URL.revokeObjectURL(objectUrl)
         } catch (err) {
-            const errorMessage =
-                err.response?.data?.message ||
-                err.message ||
-                "Unable to download your resume right now."
+            let errorMessage = err.message || "Unable to download your resume right now."
+
+            if (err.response?.data instanceof Blob) {
+                try {
+                    const blobText = await err.response.data.text()
+                    const parsed = JSON.parse(blobText)
+                    errorMessage = parsed?.message || errorMessage
+                } catch {
+                    // Keep the original fallback message if the blob isn't JSON.
+                }
+            } else if (err.response?.data?.message) {
+                errorMessage = err.response.data.message
+            }
 
             setDownloadError(errorMessage)
             console.error("Error downloading resume PDF:", errorMessage, err)

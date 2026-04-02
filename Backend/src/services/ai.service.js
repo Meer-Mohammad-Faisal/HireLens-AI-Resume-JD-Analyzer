@@ -53,6 +53,273 @@ function normalizeSkillGapItems(items) {
         .filter((item) => item.skill)
 }
 
+function escapeHtml(value) {
+    return String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;")
+}
+
+function toTitleCase(value) {
+    return String(value || "")
+        .replace(/[_/.-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+function inferRoleTitle(jobDescription) {
+    const cleaned = String(jobDescription || "").replace(/\s+/g, " ").trim()
+
+    if (!cleaned) {
+        return "Target Role"
+    }
+
+    const normalized = cleaned
+        .replace(/^(overview|job description|summary)[:\s-]*/i, "")
+        .replace(/^we are (looking for|hiring|seeking)\s+(an?\s+)?/i, "")
+        .replace(/^position[:\s-]*/i, "")
+        .replace(/^role[:\s-]*/i, "")
+
+    const titlePatterns = [
+        /((?:senior|junior|lead|principal|staff)?\s*(?:full stack|frontend|front end|backend|back end|software|web|mobile|devops|data|platform|product)?\s*(?:engineer|developer|architect|manager|analyst))/i,
+        /(?:role|position)\s*(?:is|:)?\s*([A-Z][A-Za-z0-9/&,+\- ]{4,60})/i,
+        /(?:hiring|looking for|seeking)\s+(?:an?\s+)?([A-Z][A-Za-z0-9/&,+\- ]{4,60})/i,
+    ]
+
+    for (const pattern of titlePatterns) {
+        const match = normalized.match(pattern)
+
+        if (match?.[1]) {
+            return toTitleCase(match[1])
+        }
+    }
+
+    const firstMeaningfulChunk = normalized
+        .split(/[.!?\n]/)
+        .map((part) => part.trim())
+        .find(Boolean)
+
+    return toTitleCase((firstMeaningfulChunk || "Target Role").slice(0, 60))
+}
+
+function normalizeRoadmapTopic(value) {
+    const raw = String(value || "").trim()
+
+    if (!raw) {
+        return ""
+    }
+
+    const cleaned = raw
+        .replace(/\b(depth|practice|examples|storytelling|communication|overview|alignment|interview|gap)\b/gi, "")
+        .replace(/\s+/g, " ")
+        .trim()
+
+    const lower = cleaned.toLowerCase()
+
+    if (!cleaned || cleaned.length < 3) {
+        return ""
+    }
+
+    if (["building", "motivated", "looking", "overview"].includes(lower)) {
+        return ""
+    }
+
+    if (lower === "apis" || lower === "api") {
+        return "API design and integration"
+    }
+
+    if (lower === "nestjs") {
+        return "NestJS backend patterns"
+    }
+
+    if (lower === "performance") {
+        return "Performance optimization"
+    }
+
+    if (lower === "react") {
+        return "React application architecture"
+    }
+
+    return toTitleCase(cleaned)
+}
+
+function getMissingKeywords(candidateKeywords = [], jobKeywords = [], limit = 6) {
+    const candidateSet = new Set(
+        candidateKeywords
+            .map((keyword) => String(keyword || "").trim().toLowerCase())
+            .filter(Boolean)
+    )
+
+    return jobKeywords
+        .map((keyword) => String(keyword || "").trim())
+        .filter(Boolean)
+        .filter((keyword) => !candidateSet.has(keyword.toLowerCase()))
+        .slice(0, limit)
+}
+
+function isLowSignalPreparationPlan(items) {
+    const normalizedItems = toArray(items)
+
+    if (normalizedItems.length === 0) {
+        return true
+    }
+
+    const genericFocusPattern = /^Interview preparation for day \d+$/i
+    const allGenericFocus = normalizedItems.every((item) =>
+        genericFocusPattern.test(String(item?.focus || "").trim())
+    )
+    const taskSignatures = new Set(
+        normalizedItems.map((item) =>
+            toArray(item?.tasks)
+                .map((task) => String(task || "").trim().toLowerCase())
+                .join("|")
+        )
+    )
+
+    return allGenericFocus || taskSignatures.size <= 1
+}
+
+function isLowSignalSkillGaps(items) {
+    const normalizedItems = normalizeSkillGapItems(items)
+
+    if (normalizedItems.length === 0) {
+        return true
+    }
+
+    const staticFallbackSkills = new Set([
+        "advanced system design communication",
+        "performance optimization storytelling",
+        "production incident examples",
+    ])
+
+    return normalizedItems.every((item) => staticFallbackSkills.has(item.skill.toLowerCase()))
+}
+
+function buildDynamicSkillGaps({ candidateKeywords = [], jobKeywords = [] }) {
+    const missingKeywords = getMissingKeywords(candidateKeywords, jobKeywords, 5)
+
+    if (missingKeywords.length > 0) {
+        return missingKeywords.slice(0, 3).map((keyword, index) => ({
+            skill: `${toTitleCase(keyword)} depth`,
+            severity: index === 0 ? "high" : index === 1 ? "medium" : "low",
+        }))
+    }
+
+    const fallbackSkills = jobKeywords.slice(0, 3)
+
+    if (fallbackSkills.length > 0) {
+        return fallbackSkills.map((keyword, index) => ({
+            skill: `${toTitleCase(keyword)} interview examples`,
+            severity: index === 0 ? "medium" : "low",
+        }))
+    }
+
+    return [
+        { skill: "Role-specific project storytelling", severity: "medium" },
+        { skill: "Targeted interview examples", severity: "medium" },
+        { skill: "Clear impact communication", severity: "low" },
+    ]
+}
+
+function buildDynamicPreparationPlan({
+    roadmapDays = 7,
+    roleTitle,
+    skillGaps = [],
+    candidateKeywords = [],
+    jobKeywords = [],
+}) {
+    const safeRoadmapDays = Math.max(1, Math.floor(Number(roadmapDays) || 7))
+    const prioritizedGaps = skillGaps
+        .map((item) => normalizeRoadmapTopic(item?.skill))
+        .filter(Boolean)
+        .slice(0, 4)
+    const keywordBackups = getMissingKeywords(candidateKeywords, jobKeywords, 6)
+        .map((keyword) => normalizeRoadmapTopic(keyword))
+        .filter(Boolean)
+    const strengthTopics = candidateKeywords
+        .slice(0, 4)
+        .map((keyword) => normalizeRoadmapTopic(keyword))
+        .filter(Boolean)
+    const focusPool = [...new Set([...prioritizedGaps, ...keywordBackups, ...strengthTopics])]
+    const mainRole = roleTitle || "target role"
+    const items = []
+    const middleDayTemplates = [
+        {
+            focus: (topic) => `${topic} foundations and project mapping`,
+            tasks: (topic) => [
+                `Review the core concepts behind ${topic} and relate them to what the job expects.`,
+                `Pick one of your past projects where ${topic} appeared and write down the exact decisions you made.`,
+                `Prepare two short explanations showing how your current experience can transfer to stronger ${topic} delivery.`,
+            ],
+        },
+        {
+            focus: (topic) => `${topic} implementation drill`,
+            tasks: (topic) => [
+                `Outline how you would build or improve a feature involving ${topic} for this role.`,
+                `Practice technical questions that test implementation choices, tradeoffs, and debugging around ${topic}.`,
+                `Write a compact talking point sheet with architecture, bottlenecks, and measurable impact for ${topic}.`,
+            ],
+        },
+        {
+            focus: (topic) => `${topic} interview answer rehearsal`,
+            tasks: (topic) => [
+                `Turn your strongest ${topic} example into a clear interview story with context, action, and outcome.`,
+                `Practice follow-up questions that challenge your design choices, performance assumptions, or edge cases.`,
+                `Refine your answers so they sound specific to this job description instead of generic preparation.`,
+            ],
+        },
+        {
+            focus: (topic) => `${topic} revision and gap closing`,
+            tasks: (topic) => [
+                `Identify what still feels weak in ${topic} and close it with focused revision or a mini build exercise.`,
+                `Compare the job requirement for ${topic} with your resume and add one stronger example you can mention live.`,
+                `Rehearse concise answers that connect ${topic} to business impact, scalability, or delivery quality.`,
+            ],
+        },
+    ]
+
+    for (let day = 1; day <= safeRoadmapDays; day += 1) {
+        let focus
+        let tasks
+
+        if (day === 1) {
+            focus = `${mainRole} gap mapping and interview strategy`
+            tasks = [
+                `Review the ${mainRole} requirements and identify the most important technologies, ownership expectations, and delivery signals.`,
+                "Map your resume projects to the job description and mark where your examples feel weak or outdated.",
+                `Choose the top ${Math.min(4, Math.max(2, focusPool.length || 2))} study themes for the rest of the roadmap.`,
+            ]
+        } else if (day === safeRoadmapDays) {
+            focus = `Final rehearsal for the ${mainRole} interview`
+            tasks = [
+                "Run a timed mock interview covering both technical and behavioral questions.",
+                "Refine the weakest answers, especially around tradeoffs, impact, and ownership.",
+                "Prepare a final review sheet with metrics, stories, and role-aligned talking points.",
+            ]
+        } else if (day === Math.ceil(safeRoadmapDays / 2)) {
+            const midGap = focusPool[(day - 2) % Math.max(focusPool.length, 1)] || "behavioral communication"
+            focus = `Behavioral story rehearsal around ${midGap}`
+            tasks = [
+                `Prepare STAR stories that show ownership, collaboration, and learning around ${midGap}.`,
+                "Practice concise answers for conflict, pressure, feedback, and stakeholder communication.",
+                "Add measurable outcomes and a clear takeaway to each story.",
+            ]
+        } else {
+            const selectedGap = focusPool[(day - 2) % Math.max(focusPool.length, 1)] || `${mainRole} core preparation`
+            const template = middleDayTemplates[(day - 2) % middleDayTemplates.length]
+            focus = template.focus(selectedGap)
+            tasks = template.tasks(selectedGap)
+        }
+
+        items.push({ day, focus, tasks })
+    }
+
+    return items
+}
+
 function normalizePreparationPlanItems(items, targetDays = 7) {
     const safeTargetDays = Math.max(1, Math.floor(Number(targetDays) || 7))
     const normalizedItems = toArray(items)
@@ -77,20 +344,6 @@ function normalizePreparationPlanItems(items, targetDays = 7) {
 
         seenDays.add(item.day)
         uniqueItems.push(item)
-    }
-
-    for (let day = 1; day <= safeTargetDays; day += 1) {
-        if (!seenDays.has(day)) {
-            uniqueItems.push({
-                day,
-                focus: `Interview preparation for day ${day}`,
-                tasks: [
-                    "Review the job description and align your experience with it.",
-                    "Practice likely interview questions and refine your answers.",
-                    "Revise core technical topics and project examples for discussion.",
-                ],
-            })
-        }
     }
 
     return uniqueItems.sort((a, b) => a.day - b.day)
@@ -215,14 +468,6 @@ function buildFallbackQuestionSet(type, jobDescription) {
     ]
 }
 
-function buildFallbackSkillGaps() {
-    return [
-        { skill: "Advanced system design communication", severity: "medium" },
-        { skill: "Performance optimization storytelling", severity: "medium" },
-        { skill: "Production incident examples", severity: "low" },
-    ]
-}
-
 function ensureMinimumItems(items, fallbackItems, minimumCount) {
     const normalizedItems = [...items]
 
@@ -344,7 +589,9 @@ function buildInterviewReportJsonSchema({ technicalQuestionTarget, behavioralQue
 }
 
 function normalizeInterviewReport(report, {
+    personalizationBrief,
     jobDescription,
+    roleTitle,
     roadmapDays,
     technicalQuestionTarget,
     behavioralQuestionTarget
@@ -392,11 +639,29 @@ function normalizeInterviewReport(report, {
         buildFallbackQuestionSet("behavioral", jobDescription),
         behavioralQuestionTarget
     )
-    normalizedReport.skillGaps = ensureMinimumItems(
-        normalizedReport.skillGaps,
-        buildFallbackSkillGaps(),
-        3
-    )
+    const dynamicSkillGaps = buildDynamicSkillGaps({
+        candidateKeywords: personalizationBrief?.candidateKeywords || [],
+        jobKeywords: personalizationBrief?.jobKeywords || [],
+    })
+
+    normalizedReport.skillGaps = ensureMinimumItems(normalizedReport.skillGaps, dynamicSkillGaps, 3)
+
+    if (isLowSignalSkillGaps(normalizedReport.skillGaps)) {
+        normalizedReport.skillGaps = dynamicSkillGaps
+    }
+
+    if (
+        normalizedReport.preparationPlan.length !== Math.max(1, Math.floor(Number(roadmapDays) || 7)) ||
+        isLowSignalPreparationPlan(normalizedReport.preparationPlan)
+    ) {
+        normalizedReport.preparationPlan = buildDynamicPreparationPlan({
+            roadmapDays,
+            roleTitle,
+            skillGaps: normalizedReport.skillGaps,
+            candidateKeywords: personalizationBrief?.candidateKeywords || [],
+            jobKeywords: personalizationBrief?.jobKeywords || [],
+        })
+    }
 
     return normalizedReport
 }
@@ -576,6 +841,7 @@ async function generateInterviewReport({ resume, selfDescription, jobDescription
         selfDescription,
         jobDescription
     })
+    const roleTitle = inferRoleTitle(jobDescription)
     const questionTargets = determineQuestionTargets(personalizationBrief)
     const jsonSchema = buildInterviewReportJsonSchema({
         technicalQuestionTarget: questionTargets.technicalQuestionTarget,
@@ -601,6 +867,8 @@ async function generateInterviewReport({ resume, selfDescription, jobDescription
     The number of behavioral questions must adapt to the candidate profile and role expectations, with at least ${questionTargets.behavioralQuestionTarget} behavioral questions.
     The preparationPlan must include exactly ${safeRoadmapDays} separate day entries in order from day 1 through day ${safeRoadmapDays}.
     Do not skip any day and do not repeat the same day number.
+    Each roadmap day must have a different focus and different tasks that evolve across the plan.
+    skillGaps must come from the actual mismatch between the candidate profile and the job description. Do not use generic placeholder gaps.
     Do not write generic questions that could fit any candidate.
     Every question and answer must clearly reflect the candidate background and the job requirements below.
     Use the candidate's likely projects, tools, domain, and experience level when forming the report.
@@ -676,7 +944,9 @@ async function generateInterviewReport({ resume, selfDescription, jobDescription
 
         const parsed = parseJsonResponse(rawContent)
         const normalized = normalizeInterviewReport(parsed, {
+            personalizationBrief,
             jobDescription,
+            roleTitle,
             roadmapDays: safeRoadmapDays,
             technicalQuestionTarget: questionTargets.technicalQuestionTarget,
             behavioralQuestionTarget: questionTargets.behavioralQuestionTarget,
@@ -726,24 +996,75 @@ async function generateInterviewReport({ resume, selfDescription, jobDescription
 
 
 async function genratePdfFromHtml(htmlContent) {
-    const browser = await puppeteer.launch()
-    const page = await browser.newPage();
-    await page.setContent(htmlContent, { waitUntil: "networkidle0"})
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH
+    const launchAttempts = [
+        {
+            headless: "new",
+            protocolTimeout: 120000,
+            args: [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-zygote",
+            ],
+        },
+        {
+            headless: true,
+            protocolTimeout: 120000,
+            args: [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+            ],
+        },
+    ].map((options) => (
+        executablePath ? { ...options, executablePath } : options
+    ))
 
-    const pdfBuffer = await page.pdf({ format: "A4", margin: {
-        top: "20mm",
-        right: "15mm",
-        bottom: "20mm",
-        left: "15mm"
-    }})
+    let lastError
 
-    await browser.close();
+    for (const launchOptions of launchAttempts) {
+        let browser
 
-    return pdfBuffer
+        try {
+            browser = await puppeteer.launch(launchOptions)
+            const page = await browser.newPage()
+            page.setDefaultNavigationTimeout(30000)
+            await page.setViewport({ width: 1280, height: 1810, deviceScaleFactor: 1 })
+            await page.setContent(htmlContent, { waitUntil: "domcontentloaded" })
+            await page.emulateMediaType("screen")
+
+            const pdfBuffer = await page.pdf({
+                format: "A4",
+                printBackground: true,
+                preferCSSPageSize: true,
+                margin: {
+                    top: "20mm",
+                    right: "15mm",
+                    bottom: "20mm",
+                    left: "15mm"
+                }
+            })
+
+            await browser.close()
+            return pdfBuffer
+        } catch (error) {
+            lastError = error
+            console.error("PDF generation attempt failed:", error.message)
+
+            if (browser) {
+                await browser.close().catch(() => {})
+            }
+        }
+    }
+
+    throw lastError || new Error("Failed to generate PDF.")
 }
 
 
 async function generateResumePdf({ resume, selfDescription, jobDescription }) {
+    const fallbackHtml = buildFallbackResumeHtml({ resume, selfDescription, jobDescription })
     const prompt = `
 You are an expert resume writer and ATS optimization system.
 
@@ -819,25 +1140,119 @@ ${jobDescription}
 ✅ FINAL OUTPUT:
 A polished, ATS-optimized, one-page HTML resume that looks visually identical to the original but content is improved for the given job description.
 `
-    const ai = getAiClient()
-    const response = await requestGroqInterviewReport({
-        apiKey: ai.apiKey,
-        model: ai.model,
-        prompt,
-        useTextMode: true,
-        systemPrompt: "You generate clean, printable resume HTML. Return only HTML with inline CSS."
-    })
+    let htmlContent = fallbackHtml
 
-    const rawContent = response?.choices?.[0]?.message?.content
+    try {
+        const ai = getAiClient()
+        const response = await requestGroqInterviewReport({
+            apiKey: ai.apiKey,
+            model: ai.model,
+            prompt,
+            useTextMode: true,
+            systemPrompt: "You generate clean, printable resume HTML. Return only HTML with inline CSS."
+        })
 
-    if (!rawContent) {
-        throw new Error("AI service returned an empty response for resume PDF generation.")
+        const rawContent = response?.choices?.[0]?.message?.content
+
+        if (!rawContent) {
+            throw new Error("AI service returned an empty response for resume PDF generation.")
+        }
+
+        htmlContent = extractHtmlResponse(rawContent)
+    } catch (error) {
+        console.warn("Resume HTML generation fell back to the local template:", error.message)
     }
 
-    const htmlContent = extractHtmlResponse(rawContent)
-    const pdfBuffer = await genratePdfFromHtml(htmlContent)
+    try {
+        return await genratePdfFromHtml(htmlContent)
+    } catch (error) {
+        if (htmlContent !== fallbackHtml) {
+            console.warn("Primary resume PDF render failed, retrying with the fallback template:", error.message)
+            return genratePdfFromHtml(fallbackHtml)
+        }
 
-    return pdfBuffer
+        throw error
+    }
+}
+
+function buildFallbackResumeHtml({ resume, selfDescription, jobDescription }) {
+    const roleTitle = inferRoleTitle(jobDescription)
+    const summary = selfDescription?.trim() || "Candidate profile generated from the uploaded resume."
+    const resumeBlocks = String(resume || "")
+        .split(/\n{2,}/)
+        .map((block) => block.trim())
+        .filter(Boolean)
+        .slice(0, 8)
+
+    const resumeSections = resumeBlocks.length > 0
+        ? resumeBlocks.map((block) => `<section class="resume-section"><p>${escapeHtml(block).replace(/\n/g, "<br/>")}</p></section>`).join("")
+        : `<section class="resume-section"><p>${escapeHtml(summary)}</p></section>`
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>${escapeHtml(roleTitle)} Resume</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            padding: 32px;
+            font-family: Arial, sans-serif;
+            color: #111827;
+            background: #ffffff;
+            line-height: 1.45;
+        }
+        .resume-shell {
+            width: 100%;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .resume-header {
+            border-bottom: 2px solid #1f2937;
+            padding-bottom: 16px;
+            margin-bottom: 20px;
+        }
+        .resume-title {
+            margin: 0 0 8px;
+            font-size: 28px;
+            font-weight: 700;
+        }
+        .resume-subtitle {
+            margin: 0;
+            font-size: 15px;
+            color: #4b5563;
+        }
+        .resume-section {
+            margin-bottom: 16px;
+        }
+        .resume-section h2 {
+            margin: 0 0 8px;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #374151;
+        }
+        .resume-section p {
+            margin: 0;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div class="resume-shell">
+        <header class="resume-header">
+            <h1 class="resume-title">${escapeHtml(roleTitle)} Resume</h1>
+            <p class="resume-subtitle">${escapeHtml(summary)}</p>
+        </header>
+        <section class="resume-section">
+            <h2>Target Job</h2>
+            <p>${escapeHtml(jobDescription || "No job description provided.").replace(/\n/g, "<br/>")}</p>
+        </section>
+        ${resumeSections}
+    </div>
+</body>
+</html>`
 }
 
 module.exports = {generateInterviewReport, generateResumePdf}
